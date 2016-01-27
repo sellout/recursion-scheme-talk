@@ -1,0 +1,347 @@
+#+TITLE: Fix Haskell (by eliminating recursion)
+#+AUTHOR: Greg Pfeil (@sellout)
+#+EMAIL: greg@technomadic.org
+#+DATE: Tuesday, 2016 January 26
+#+DESCRIPTION: Generalized recursion schemes and transformations.
+#+OPTIONS: d:(not LOGBOOK SPEAKERNOTES)
+#+DRAWERS: SPEAKERNOTES
+#+EPRESENT_FRAME_LEVEL: 3
+#+IMPRESSJS_STYLE: impress-demo.css
+#+IMPRESSJS_SRC: http://kinjo.github.io/org-impress-js.el/resources/js/impress.js
+# (setf epresent-mode-line '("  https://sli.do/sxhaa0e2" "                                   " (:eval (int-to-string epresent-page-number))))
+# (setf epresent-text-scale 40)
+               [[./nesting_dolls_of_horror_small.jpg]]
+          ↓ questions                                 slide ↓
+
+:SPEAKERNOTES:
+- how much Haskell experience do people have? This will help me figure out how much of the talk needs explaining.
+- testing out sli.do
+:END:
+
+* Introduction
+
+“Meijer et. al go so far as to condemn functional programming
+ without recursion schemes as morally equivalent to imperative
+ programming with goto.”
+    —Patrick Thomson in /An Introduction to Recursion Schemes/
+
+#+BEGIN_SRC haskell -n
+ghyloM ∷ (Traverse f, Comonad w, Monad m, Monad n)
+       ⇒ (f (w b) → m b) → (a → m (f (n b))) → a → m b
+#+END_SRC
+
+* The Functor
+
+#+BEGIN_SRC haskell -n
+data Expr' = Var' String       -- 👻
+           | Lam' String Expr'
+           | App' Expr' Expr'
+#+END_SRC
+
+:SPEAKERNOTES:
+There are a few problems with this (common) type of structure:
+- you have to hand-write various traversals (you can use something like Uniplate to actually derive this stuff for you, but it’s fragile template code)
+- you can’t annotate anything easily. You need to create either a parallel structure (which has to be maintained) or use some map that keeps track of the associations (buggy)
+- you have *general recursion*! 👻
+:END:
+
+#+BEGIN_SRC haskell -n
+data Expr a = Var String
+            | Lam String a
+            | App a a
+            deriving Traversable
+#+END_SRC
+
+:SPEAKERNOTES:
+- we’ve now replaced the recursion with a parameter, so, yay, no more recursion!
+- but now how do we create a tree without recursion?
+:END:
+
+** Fix
+
+#+BEGIN_SRC haskell -n
+  data Expr a = Var String
+              | Lam String a
+              | App a a
+              deriving Traversable
+#+END_SRC
+
+#+BEGIN_SRC haskell -n
+Expr Expr -- 🚫
+#+END_SRC
+
+#+BEGIN_SRC haskell -n
+Expr (Expr (Expr (Expr ()))) -- ❗
+#+END_SRC
+
+#+BEGIN_SRC haskell -n
+data Fix f = Fix { project ∷ f (Fix f) } -- 👻
+embed :: f (Fix f) → Fix f
+embed = Fix
+
+Fix Expr
+#+END_SRC
+
+:SPEAKERNOTES:
+This is something that quite a few FP papers open with. This is the Y combinator applied to types.
+
+So, let’s look at this definition of ~Fix~. It’s a bit confusing because of the haskell convention of Giving the same name to the type operator and the value constructor. But, we’re defining a new data type, whose only constructor is ~Fix~, which takes a value of type ~f~ parameterized by a value of type ~Fix f~. So, we’ve just re-introduced our recursion. I thought we were trying to get rid of that bastard! Well, at least the only recursive code we need is now localized in one tiny place.
+:END:
+
+* Extensibility
+** coproducts
+
+:SPEAKERNOTES:
+We have a nice λCalculus here – but you know, machines often work a bit faster if we can give them actual numbers to work with. So, let’s bolster our language a bit.
+:END:
+#+BEGIN_SRC haskell -n
+data Math a = Const Integer
+            | Add a a
+            | Mult a a
+            deriving Traversable
+
+type MathExpr a = Expr :+: Math
+
+-- data MathExpr a = Var String
+--                 | Lam String a
+--                 | App a a
+--                 | Const Integer
+--                 | Add a a
+--                 | Mult a a
+--                 deriving Traversable
+#+END_SRC
+
+:SPEAKERNOTES:
+So now we can interleave Expr and Math terms willy-nilly in the tree.
+
+In compilers (and other programs), we often have many “phases” where the AST changes to some extent along the way. It’s not unusual to see things like ~OuterAST~ and ~InnerAST~, where the former contains basically every language construct and the latter has expanded many of them into more fundamental parts of the AST. With much duplication between the two – especially in the operations defined on them.
+
+This Coproduct approach allows us to define each part of the AST once, and then combine them into many different configurations. This is one of the gains that allows us to make “smaller, sharper tools” (i.e., functions) rather than trying to combine logically-different transformations in a single pass, to avoid too much duplication.
+:END:
+
+* Totality
+
+:SPEAKERNOTES:
+Totality is the escape hatch from the halting problem. Basically, by eliminating divergence (infinite loops, unhandled cases, etc.) we can know so much more about our programs. We can no longer, technically, write Turing-complete software, but we can _describe_ a Turing-complete program. The ~IO~ monad does some of this, and the ~Partiality~ monad does even more, where we can describe a potentially-infinite process in a finite way.
+:END:
+
+** [co]inductive structures
+
+:SPEAKERNOTES:
+So, as we saw earlier, ~Fix~ still has general recursion. At least now it’s localized to one place, rather than polluting all of our data structures, but in order to achieve totality, we have to purge it completely. There are two other fixpoint operators that help us with that:
+:END:
+
+#+BEGIN_SRC haskell -n
+newtype Mu f = Mu (forall a. (f a → a) → a) -- inductive
+data Nu f where Nu ∷ (a → f a) → a → Nu f   -- coinductive
+#+END_SRC
+
+#+BEGIN_SRC haskell -n
+type Algebra f a   = f a → a
+type Coalgebra f a = a → f a
+
+newtype Mu f = Mu (forall a. Algebra f a → a)
+data Nu f where Nu ∷ Coalgebra f a → a → Nu f
+#+END_SRC
+
+:SPEAKERNOTES:
+~Mu~ represents the “least fixpoint”, for finite data structures, whereas ~Nu~ is the “greatest fixpoint”, for potentially infinite data structures (e.g., ~Stream~). You can see that neither of them have recursion, but are rather directly represented by a fold and unfold themselves.
+
+And, thus, we no longer have /any/ recursion in our data structures.
+:END:
+
+** Idris diversion
+
+:SPEAKERNOTES:
+Of course, in a language like Idris, there is a distinction between inductive ~data~ and coinductive ~codata~. The compiler is doing something kind of like this for you already – if you are writing a ~total~ function, it won’t compile unless any recursion in it is properly inductive or coinductive. Does this approach buy us anything in a language like that?
+
+Yes – in addition to some of the flexibility we’ll cover later, it also eliminates duplicating data structures to get inductive and coinductive versions
+:END:
+
+#+BEGIN_SRC idris
+data   List a   = Cons a (List a)   | Nil
+codata CoList a = Cons a (CoList a) | Nil
+#+END_SRC
+
+#+BEGIN_SRC haskell -n
+data ListF a r = Cons a r | Nil
+
+type List a = Mu (ListF a)
+type CoList a = Nu (ListF a)
+#+END_SRC
+
+:SPEAKERNOTES:
+So, with our version, we defer the decision as to whether a data structure is inductive or coinductive to point-of-use. We don’t need to make a different structure if we decide we need the other in some case.
+:END:
+
+** λCalculus normal form
+
+:SPEAKERNOTES:
+One benefit of totality is that all terms now have a normal form in the λCalculus. This means we can “aggressively inline” without hitting any infinite loops. In the end, this means that
+:END:
+
+*semantically equivalent programs generate identical executables*
+
+:SPEAKERNOTES:
+That’s a big deal, Which sounds impossible. And if the code used general recursion, it would be. But tools like morte implement basically this. It’s now possible to abstract to any level you want, and know that the final program will be /identical/ to a less-abstracted version.
+
+Of course, it’s not cost-free. The tradeoff is longer compile times. The more abstract you get, the longer it will take to reach that normal form.
+:END:
+
+* Generality
+** recursion-schemes
+
+*** folds & unfolds
+
+:SPEAKERNOTES:
+Ok, so we’ve extracted the recursion from the data structure, but it’s still there in Fix, so we can’t use a supercompiler. So what /can/ we do?
+
+Let’s start with a little function called ~cata~.
+:END:
+
+#+BEGIN_SRC haskell -n
+cata ∷ Algebra f a → Mu f → a   -- f a → a
+ana  ∷ Coalgebra f a → a → Mu f -- a → f a
+
+cata f = f ⋘ fmap cata ⋘ project -- 👻
+#+END_SRC
+
+:SPEAKERNOTES:
+Uh oh – did a bit more general recursion sneak in there? Well, let’s not worry about that for the moment …
+:END:
+
+#+BEGIN_SRC haskell -n
+data ListF a r = Cons a r | Nil
+type List a = Mu (ListF a)
+
+data StreamF a r = Stream a r
+type Stream a = Nu (StreamF a)
+#+END_SRC
+
+:SPEAKERNOTES:
+This is a generalization of ~foldR~. And yes, we can redefine List (and anything else ~Foldable~ so that it works with this approach). This signature basically says “given a function that can convert one level of ~f~ to an ~a~, I’ll give you a function that converts a tree of ~f~ to an ~a~.”
+
+So, how does that work?
+:END:
+
+*** an algebra
+
+#+BEGIN_SRC haskell -n
+countNodes' ∷ Expr' → Integer -- 👻
+countNodes' (Var _)       = 1
+countNodes' (Lam _ body)  = 1 + countNodes' body
+countNodes' (App lam app) = 1 + countNodes' lam + countNodes' app
+
+countNodes ∷ Algebra Expr Integer -- Expr Integer → Integer
+countNodes (Var _)       = 1
+countNodes (Lam _ body)  = 1 + body
+countNodes (App lam app) = 1 + lam + app
+
+countNodes'     (App (Lam "i" (Var "i")) (Var "x"))
+cata countNodes (app (lam "i" (var "i")) (var "x"))
+-- ≣> 4
+#+END_SRC
+
+:SPEAKERNOTES:
+Those are two implementations of the same function – which seem about the same in overall complexity. However, the former contains general recursion 👻, while the latter does not.
+
+Also, the latter is /way/ more flexible.
+:END:
+
+*** zip/attribute
+
+#+BEGIN_SRC haskell -n
+zipAlgebras ∷ Functor f
+            ⇒ Algebra f a → Algebra f b → Algebra f (a, b)
+attribute ∷ Algebra f a → Algebra f (Cofree f a)
+
+maxDepth ∷ Foldable f ⇒ Algebra f Integer
+maxDepth = foldr `max` 0
+
+cata (attribute (zipAlgebras countNodes maxDepth))
+     (Fix (App (Fix (Lam "i" (Fix (Var "i")))) (Fix (Var "x"))))
+-- ≅> ((4, 2), (App ((2, 1), (Lam "i" ((1, 0), (Var "i"))))
+--                  ((1, 0), (Var "x"))))
+#+END_SRC
+
+:SPEAKERNOTES:
+So, by applying ~attribute~ to our function, rather than folding the whole structure down to a single value, it adds an attribute to each node containing the value of the function at that point in the fold.
+
+So, this not only simplifies implementation of attributes (by ignoring that aspect altogether), it also (again), postpones the decision of /how/ to use the function to point-of-use. You write the function once, and whether you need to just get the answer, or need to annotate it for further analysis,
+
+explain how cata works …
+:END:
+
+*** generalized folds & unfolds
+
+#+BEGIN_SRC haskell -n
+gcata ∷ Comonad w ⇒ (f (w a) → a) → Mu f → a
+gana  ∷ Monad m ⇒ (a → f (m a)) → a → Mu f
+#+END_SRC
+
+| folds      | unfolds          |
+|------------+------------------|
+| (Fix f, _) | Either (Fix f) _ |
+| (x, _)     | Either x _       |
+| Cofree f _ | Free f _         |
+
+#+BEGIN_SRC haskell -n
+gcataM ∷ (Comonad w, Monad m) ⇒ (f (w a) → m a) → Mu f → m a
+ganaM  ∷ (Monad m, Monad m)
+       ⇒ (a → n (f (m a))) → a → n (Mu f)
+#+END_SRC
+
+*** traversals
+#+BEGIN_SRC haskell -n
+transCata ∷ (Functor f, Functor g) ⇒ (f (Mu g) → g (Mu g)) → Mu f → Mu g
+transAna ∷ (Functor f, Functor g) ⇒ (f (Mu f) → g (Mu f)) → Mu f → Mu g
+#+END_SRC
+
+#+BEGIN_SRC haskell -n
+compile   :: Sql (t IR) -> IR (t IR)
+normalize :: IR (t IR) -> IR (t IR)
+#+END_SRC
+
+#+BEGIN_SRC haskell -n
+type Attr a f = Cofree f a -- not Corecursive
+type Interp a f = Free f a -- not Recursive
+#+END_SRC
+
+* Efficiency
+
+** zipping
+
+#+BEGIN_SRC haskell -n
+zipAlgebras ∷ Functor f
+            ⇒ Algebra f a → Algebra f b → Algebra f (a, b)
+attribute ∷ Algebra f a → Algebra f (Cofree f a)
+
+maxDepth ∷ Foldable f ⇒ Algebra f Integer
+maxDepth = foldr `max` 0
+
+cata (attribute (zipAlgebras countNodes maxDepth))
+     (Fix (App (Fix (Lam "i" (Fix (Var "i")))) (Fix (Var "x"))))
+-- ≅> ((4, 2), (App ((2, 1), (Lam "i" ((1, 0), (Var "i"))))
+--                  ((1, 0), (Var "x"))))
+#+END_SRC
+
+** composition
+
+#+BEGIN_SRC haskell -n
+hylo ∷ Functor f ⇒ Algebra f b → Coalgebra f a → a → b
+hylo f g = f ⋘ fmap (hylo f g) ⋘ g
+
+cata' = flip hylo project
+ana'  = hylo embed
+#+END_SRC
+
+#+BEGIN_SRC haskell -n
+zygo ∷ (f b -> b) → (f (b, a) → a) → Mu f → a
+prepro ∷ (g a → a) → (forall a. f a → g a) → Mu f → a
+#+END_SRC
+
+* Conclusion
+
+Converting recursive data types to functors provides you with extensible code that’s reusable, more efficient, and easier to reason about.
+
+*Functor /all/ the types!*
