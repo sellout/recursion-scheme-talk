@@ -100,7 +100,7 @@ data Math a = Const Integer
             | Mult a a
             deriving Traversable
 
-type MathExpr a = Expr :+: Math
+type MathExpr = Expr :+: Math
 
 -- data MathExpr a = Var String
 --                 | Lam String a
