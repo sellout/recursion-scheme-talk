@@ -1,0 +1,418 @@
+#+TITLE: Efficient Nanopass Compilers using Cats and Matryoshka
+#+AUTHOR: Greg Pfeil
+#+EMAIL: greg@technomadic.org
+#+DATE: Wednesday, 2016 March 2
+#+DESCRIPTION: Generalized recursion schemes and transformations.
+#+OPTIONS: d:(not LOGBOOK SPEAKERNOTES)
+#+DRAWERS: SPEAKERNOTES
+#+EPRESENT_FRAME_LEVEL: 3
+#+EPRESENT_MODE_LINE: (" @sellout" "                                                     " (:eval (int-to-string epresent-page-number)))
+
+
+
+
+
+
+
+
+
+
+ ↓ Twitter                                              slide ↓
+
+:SPEAKERNOTES:
+Hi, I’m Greg. I work for SlamData, a small startup in Boulder that works on analytics for NoSQL. The core of our product is basically a compiler from a multidimensional relational model to various NoSQL query APIs. We also expose a frontend that compiles from a generalized SQL variant to our relational model. The techniques I’m going to talk about largely reflect how we do things (although, of course, different parts of the code base are closer or farther from the ideal).
+:END:
+
+* Introduction
+
+:SPEAKERNOTES:
+First, I want to say that while I’m discussing these things in the context of compilers, it’s applicable in tons of software. For example, anywhere you deal with recursive data structures, like JSON or XML. So, if you don’t have much of an interest in compilers yourself, I hope you still take something useful away from this.
+:END:
+
+** Overview
+
+#+begin_src scala
+type Parser[A] = String => List[(A, String)]
+
+type Compiler[A, B] = A => B
+
+type Serializer[B] = B => String
+#+end_src
+
+:SPEAKERNOTES:
+A parser for things is a function from strings to a list of pairs of things and strings.
+
+A compiler’s a function from thing 1 to thing 2
+:END:
+
+:SPEAKERNOTES:
+So, these are the three most coarse-grained parts of a compiler – a parser that reads in the syntax, the core of the compiler itself, and a serializer that writes the final code, whether in another source language like JS, some bytecode, etc. And, of course, those first and last parts are also a bit fuzzy. Structure editors are all about skipping the parsing stage, and editing the AST directly. Interpreters replace the serializer with an evaluator (but still usually have some actual compilation stages along the way).
+
+The function in the middle, though, the compiler itself is always there. And boy … it’s pretty generic. Pretty much anything can be a compiler, eh?
+
+Of course, the true type is usually a /bit/ more specific than that, and we’ll see how to expose that.
+:END:
+
+:SPEAKERNOTES:
+I’m going to talk about three and a half approaches to compiler design here. And they’re definitely in the order I was introduced to them – although I think people who learn more about compilers in school probably see them in a slightly different way.
+
+There are tradeoffs between them, but I think there’s also a progression that makes sense to the FP mindset, where the benefits of the earlier approaches are perhaps seen as not as important. Or, at least, something to be deprioritized until after the initial design is complete.
+:END:
+
+*** The Language
+
+:SPEAKERNOTES:
+Before we get into the compiler, let’s talk about /what/ we’re going to compile.
+:END:
+
+#+begin_src scala
+sealed trait Lambda
+final case class Lam(args: List[String], body: Lambda)
+    extends Lambda
+final case class App(f: Lambda, expr: List[Lambda])
+    extends Lambda
+final case class Var[A](name: String) extends Lambda
+final case class Let(bindings: List[(String, Lambda)],
+                     body: Lambda)
+    extends Lambda
+final case class If(test: Lambda,
+                    consequent: Lambda,
+                    alt: Lambda)
+    extends Lambda
+#+end_src
+
+:SPEAKERNOTES:
+Not the best language, but pretty simple for our purposes. It’s basically lambda calculus with n-ary functions, ~let~ bindings, and an ~if~ expression.
+:END:
+
+*** The Target
+
+:SPEAKERNOTES:
+And, of course, we need something to compile to …
+:END:
+
+#+begin_src scala
+sealed trait Assem
+#+end_src
+
+:SPEAKERNOTES:
+Yeah, we don’t really need to know the details of Assem. It’s already a pain to fit a lot of this on a slide, without having to worry about the details of the implementation.
+:END:
+
+* Monolithic
+:SPEAKERNOTES:
+A monolithic compiler is pretty efficient. It trades off readability and maintainability for performance.
+
+For the bulk of my time working in compilers, this is what I was exposed to. I love compilers and language design, but every time I would be introduced to a new compiler, I would have anxiety as I tried to figure out the code base.
+
+This isn’t necessarily /one/ pass, but rather a small number of complicated passes. It gets good performance and pretty compact code in general, but maintainability is … tough.
+:END:
+#+begin_src scala
+def compile: Lambda => State[CompState, Assem] = {
+  case Var(name) => ???.point[State[CompState, ?]]
+  case Lam(args, body) => compile(body).map(???)
+  case App(f, expr) =>
+    (compile(f) |@| exprs.traverse(compile))(???)
+  case Let(bindings, body) =>
+    bindings.unzip((names, exprs) =>
+      (compile(body) |@| exprs.traverse(compile))((b, e) =>
+        compile(App(Lam(names, b), e))))
+  case If(test, consequent, alt) =>
+    (compile(test) |@| compile(consequent) |@| compile(alt))(
+      (t, c, a) =>
+        compile(App(t, List(Lam(Nil, c), Lam(Nil, a)))))
+}
+#+end_src
+
+:SPEAKERNOTES:
+We do everything in a single pass in this compiler, basically compiling bottom-up, with State to carry the information we need between steps. The one interesting bit is where we rewrite the ~Let~ into ~App(Lam)~, then call ~compile~ on that value.
+:END:
+
+* Micropass (multipass)
+:SPEAKERNOTES:
+The name of this style comes from the fact that passes are broken down into smaller pieces, but beyond that there’s a range of possibilities here. EG, do they combine operations on various components that don’t /have/ to be done together? Do they duplicate their datatypes with small changes, or just have one datatype that is a bit sloppy? (usually somewhere in between – “outer” and “inner”)
+:END:
+
+** unsafe
+
+:SPEAKERNOTES:
+Even at the finest-grained level, this tends to have functions with names like ~desugar~ that do a number of transformations at once, basically transforming one largely-duplicated AST into a smaller one (or even using the same AST, and just erroring when one of the cases that shouldn’t exist still does).
+:END:
+
+#+begin_src scala
+val desugar: Lambda => Lambda = {
+  case Let(bindings, body) =>
+    bindings.unzip((names, exprs) =>
+      App(Lam(names, desugar(body)), exprs.map(desugar)))
+  case If(test, consequent, alt) =>
+    App(desugar(test), List(
+      Lam(Nil, desugar(consequent),
+      Lam(Nil, desugar(alt))))
+  case Lam(args, body) => Lam(args, desugar(body))
+  case App(f, exprs) => App(desugar(f), exprs.map(desugar))
+  case Var(name) => Var(name)
+}
+#+end_src
+
+** unsafe, cont.
+
+:SPEAKERNOTES:
+You now have a more restricted structure, but it’s not reflected in the AST. So you end up having to deal with “impossible” cases somehow.
+:END:
+
+#+begin_src scala
+val translate: Lambda => State[CompState, Assem] = {
+  case Lam(args, body) => ???
+  case App(f, exprs) => ???
+  case Var(name) => ???
+  case _ => scala.sys.error("invalid node for compilation")
+}
+
+val compile: Lambda => State[CompState, Assem] =
+  translate.compose(desugar)
+#+end_src
+
+** duplicated
+:SPEAKERNOTES:
+The other approach in micropass trades off this … unsafety … for a bit of duplication
+:END:
+
+#+begin_src scala
+sealed trait InnerLambda
+final case class ILam(args: List[String], body: InnerLambda)
+    extends InnerLambda
+final case class IApp(f: InnerLambda, expr: InnerLambda)
+    extends InnerLambda
+final case class IVar[A](name: String) extends InnerLambda
+
+val desugar: Lambda => InnerLambda = ???
+
+val translate: Lambda => State[CompState, Assem] = {
+  case ILam(args, body) => ???
+  case IApp(f, exprs) => ???
+  case IVar(name) => ???
+}
+#+end_src
+
+:SPEAKERNOTES:
+Now we’ve duplicated a subset of ~Lambda~ as ~InnerLambda~, but we no longer have (im)possible failure in ~translate~.
+
+Again – these are very simple examples. The pain doesn’t scale linearly – there are often many analyses that happen in a compiler, and with the duplication, there is way more code. And also, duplication means keeping things in sync. If you change one AST, you have to change others, and all the operations that touch them.
+:END:
+
+* Nanopass
+
+:SPEAKERNOTES:
+This tightens up the micropass, generally with more peformance cost – Coproducts, Prisms, etc. help us in the Typelevel world.
+:END:
+
+** a digression: fixed point data types
+
+:SPEAKERNOTES:
+Up to this point, we’ve been writing our transformations pretty directly. But for this next step, we’re going to have to change that a bit.
+:END:
+
+#+begin_src scala
+sealed trait InnerLambda[A]
+final case class Lam[A](args: List[String], body: A)
+    extends InnerLambda[A]
+final case class App[A](f: A, expr: List[A])
+    extends InnerLambda[A]
+final case class Var[A](name: String) extends InnerLambda[A]
+#+end_src
+
+#+begin_src scala
+case class Fix[F[_]](unFix: F[Fix[F]])
+
+Fix[InnerLambda]
+#+end_src
+
+** ~Coproduct~ and ~Inject~ (Cats)
+:SPEAKERNOTES:
+The first thing we’ll use ~Fix~ for is composing smaller data types, so we can incrementally change from one type to another without a lot of duplication.
+:END:
+#+begin_src scala
+final case class Let[A](bindings: List[(String, A)], body: A)
+final case class If[A](test: A, consequent: A, alt: A)
+
+def expandLet[Lambda :<: F]: Fix[Let :+: F] => Fix[F] =
+  _.unFix match {
+    case Let(bindings, body) =>
+      bindings.unzip((names, exprs) =>
+        Fix(App(Fix(Lam(names, expandLet(body)).inject),
+                exprs.map(expandLet)).inject))
+    // and don’t forget the other cases
+  }
+
+def expandIf[Lambda :<: F]: Fix[If :+: F] => Fix[F] =
+  _.unFix match {
+    case If(test, consequent, alt) =>
+      Fix(App(expandIf(test), List(
+        Fix(Lam(Nil, expandIf(consequent))),
+        Fix(Lam(Nil, expandIf(alt))))))
+    // seriously, still gotta handle the other cases
+  }
+#+end_src
+
+:SPEAKERNOTES:
+What this gives us is fine-grained control over our data types without duplicating them. We spilt it into “atomic” pieces and only have to be aware of the pieces we care about in a particular transformation. That allows us to do either ~expandIf <<< expandLet~ or ~expandLet <<< expandIf~ whenever we want. In the former, the types go
+:END:
+
+~Fix[If :+: Let :+: Lambda]~ → ~Fix[If :+: Lambda]~ → ~Fix[Lambda]~
+
+:SPEAKERNOTES:
+and in the latter
+:END:
+
+ ~Fix[If :+: Let :+: Lambda]~ → ~Fix[Let :+: Lambda]~ → ~Fix[Lambda]~
+
+:SPEAKERNOTES:
+So, you can see that even though we diverge in the middle, we go from the same initial type to the same final type.
+:END:
+
+* regaining performance … through further abstraction
+
+:SPEAKERNOTES:
+Turning our various transformations from those on recursive structures (granted, already fixpoint, thanks to Coproducts) to folds, natural transformations, etc. allows us to compose these operations again.
+
+Up to now, we’ve been defining our transformations like ~Mu[F] => Mu[F]~. But there is a way that is both easier and more efficient. We’ll start with something familiar.
+:END:
+
+*Matryoshka* – https://github.com/slamdata/matryoshka
+
+- 1.0 coming soon (~1 month)
+- (hopefully) Typelevel incubator status soon
+
+
+
+
+
+
+** folds, unfolds, and transformations
+
+#+begin_src scala
+def cata[F[_]: Functor](t: Fix[F])(φ: F[A] => A): A
+
+def ana[F[_]: Functor](a: A)(ψ: A => F[A]): T[F]
+
+val primeFactors: Int => ListF[Int, ?]
+val inferType: (Type, Fix[Lambda]) => Lambda[(Type, Fix[Lambda])]
+
+def transCata[F[_]: Functor, G[_]: Functor](
+  t: Fix[F])(f: F[Fix[G]] => G[Fix[G]]):
+    T[G]
+#+end_src
+
+:SPEAKERNOTES:
+Does that look familiar? If you’ve used something by the same name in Scalaz, you might be onto me. That function is ~foldRight~ generalized to /any/ functor. And what does ~foldRight~ generally do for us? It allows us to specify single-step semantics for a list and it handles the recursion for us.
+:END:
+
+** algebras
+:SPEAKERNOTES:
+So, ok, we don’t need to worry about recursion ourselves, but what else does that buy us? It allows us to eliminate multiple passes over our data. Using things like ~cata~, we can write various algebras (that’s what they’re called), and compose them efficiently.
+:END:
+
+#+begin_src scala
+def expandLet[Lambda :<: F]: (Let :+: F)[Fix[F]] => F[Fix[F]] = {
+  case Let(bindings, body) =>
+    bindings.unzip((names, exprs) =>
+      Fix(App(Fix(Lam(names, body).inject), exprs).inject))
+  case x => x
+}
+
+def expandIf[Lambda :<: F]: (If :+: F)[Fix[F]] => F[Fix[F]] = {
+  case If(test, consequent, alt) =>
+    Fix(App(test,
+      List(Fix(Lam(Nil, consequent)), Fix(Lam(Nil, alt)))))
+  case x => x
+}
+#+end_src
+
+:SPEAKERNOTES:
+There are a few things to note here: First, we now take the “unwrapped” functor as the argument. So we don’t need to ~unFix~ prior to matching, and the type itself tells us that the recursive calls have already been made, so we don’t need to do that explicitly either. And since we don’t need to handle the recursive calls, we can handle all the cases we don’t care about with a simple identity.
+
+And, like when we first introduced Cat’s ~Inject~ above, we can compose our functions …
+:END:
+
+** composition
+
+#+begin_src scala
+expandIf <<< expandLet
+#+end_src
+
+:SPEAKERNOTES:
+But now, rather than that operating over trees, it operates over a single node of the tree.
+:END:
+
+#+begin_src scala
+val desugar: Fix[Let :+: If :+: Lambda] => Fix[Lambda] =
+  _.transCata(expandIf <<< expandLet)
+#+end_src
+
+:SPEAKERNOTES:
+So, now, rather than traversing the tree and building intermediate trees for every step of the way, we only traverse once (like we did in the micropass version), but still have the nano-level operations.
+
+Also, when you traverse a tree, how does it work? A bottom-up traversal first walks to the leaves, then applies some operation on the way back up. A top-down traversal performs some operation at the root, then performs it on the branches, etc. and pops back out at the end. So … in both cases, you go to the leaves, then back to the root, but you only perform the operation in one direction.
+
+Matryoshka gives us another way to compose recursive operations that takes advantage of this:
+:END:
+
+** other combinations
+
+*** up and down
+
+#+begin_src scala
+x.hylo(bottomUp, topDown)
+
+x.ana(topDown).cata(bottomUp)
+#+end_src
+
+:SPEAKERNOTES:
+Now, in a single pass we apply a top-down transformation (which may be a composition of smaller transformations) as we move toward the leaves, then a bottom-up transformation as we move back to the root. So, even though those two operations aren’t directly composable, we’ve still managed to perform both of them in a single traversal of the tree.
+
+Matryoshka has a bunch of variants on this theme. Applied in the right places, we can take advantage of the small, clear nanopass style while still maintaining the performance and relatively small code size of the monolithic style.
+:END:
+
+*** zipping
+
+#+begin_src scala
+val pprint: Lambda[String] => String
+val eval: Lambda[Int] => Int
+
+lam.cata(pprint zip eval): (String, Int)
+#+end_src
+
+*** annotations
+
+#+begin_src scala
+val buInferType: Lambda[Type] => Type
+
+lam.cata(buInferType.attribute): Cofree[Lambda, Type]
+
+val useType1: Lambda[(Type, Value)] => Value
+lam.zygo(inferType, useType1): Value
+
+val tdInferType: (Type, Fix[Lambda]) => Lambda[(Type, Fix[Lambda])]
+val useType2: (Type, Lambda[Value]) => Value
+lam.coelgot(useType2, tdInferType): Value
+#+end_src
+
+* Questions?
+
+:SPEAKERNOTES:
+- I’ll probably be a bit scarce tomorrow, but I’m happy to talk about this more in the hallways today or during both days of NEScala.
+- I’m happy to unconference about more of this stuff tomorrow or Saturday (on NEScala’s unconference day) – specifically, go into depth on Matryoshka
+- Rob Norris (@tpolecat) is planning an unconference session on Doobie that goes into some other fixpoint topics
+- SlamData will be hiring soon, so if any of this sounded interesting (or if it didn’t, but other aspects of our company – NoSQL, analytics, etc. do), then talk to me about that as well.
+:END:
+
+- convince Rob Norris (@tpolecat) to talk about some
+  Doobie-related fixed point stuff tomorrow
+- more about Matryoshka in Saturday’s unconference?
+- SlamData (http://slamdata.com/) is hiring
+- LambdaConf on Memorial Day weekend in Boulder,
+  with a one-day Typelevel Summit
+
+
+
+*Greg Pfeil*   greg@slamdata.com
