@@ -8,3 +8,9 @@ Talks included in this repo:
 
 - [Fix Haskell (by eliminating recursion)](recursion-scheme-talk.org) (2016–01–26)
 - [Efficient Nanopass Compilers using Cats and Matryoshka](nanopass-compiler-talk.org) – [video](https://www.youtube.com/watch?v=TQIHRBXM75E) (2016–03–02)
+- [Recursion: where FP hits ⊥](recursion-bottom.org) (2016-05-27)
+
+Additional resources:
+
+- [recursion scheme cheat sheet](cheat sheet.pdf)
+- [algebra cheat sheet](algebras.pdf)

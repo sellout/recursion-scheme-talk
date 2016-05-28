@@ -1,0 +1,613 @@
+#+title: Recursion: where FP hits ⊥
+#+author: Greg Pfeil
+#+date: Friday, 27 May 2016
+#+email: greg@technomadic.org
+#+options: d:(not LOGBOOK SPEAKERNOTES)
+#+drawers: SPEAKERNOTES
+#+epresent_frame_level: 4
+#+epresent_face_attributes: (:family "Adobe Caslon Pro" :height 400)
+#+epresent_mode_line: (" @sellout" "                          " "Recursion: where FP hits ⊥"     "                                       " (:eval (int-to-string epresent-page-number)))
+
+
+
+
+
+
+
+
+
+
+  ↓ Twitter                                                                                   slide number ↓
+
+* *⊥* – a.k.a. “bottom”
+
+  :speakernotes:
+Bottom in programming languages is the type of a computation that doesn’t complete successfully. FP has managed to reign in a lot of the things that trigger it:
+  :END:
+
+- exceptions
+- exhaustivity ([[http://research.microsoft.com/en-us/um/people/simonpj/papers/pattern-matching/gadtpm-acm.pdf][ /GADTs Meet Their Match/ ]])
+- recursion
+- deadlocks
+- …
+
+:speakernotes:
+Even very complicated pattern matching – involving extensions like guards, GADTs, and view patterns, can now be  [needs citation]
+
+but one aspect that still plagues most FP environments is non-termination. That is – infinite recursion.
+
+Some languages, called “total” languages, also take care of this. Roughly, they make sure that every recursive call operates on a “smaller” value. How many of you get to spend a lot of time working in total languages? Coq? Agda? Idris? Yeah, that’s about what I expected.
+
+So how can we get at least some of those benefits of controlled recursion in the languages we use today?
+:END:
+
+* background
+
+  :speakernotes:
+- who’s familiar with Haskell or Scala?
+- some other statically-typed language?
+- how about foldRight / reduce?
+- unfold?
+  :END:
+
+- examples in Haskell and Scala
+
+- *Haskell* – Ed Kmett’s library (https://github.com/ekmett/recursion-schemes)
+- *Scala* – SlamData’s Matryoshka (https://github.com/slamdata/matryoshka)
+
+- [[https://github.com/sellout/recursion-scheme-talk]]
+
+:speakernotes:
+For the Clojure contingent, jneen may have said that Tulip is not quite a lisp, then showed some Tulip that was valid Haskell. I’m going to claim that Haskell is almost a Lisp – especially if you write it the way I do. So, Clojurites, look at the Haskell examples.
+:END:
+
+* a recursive type
+
+#+begin_src haskell -n
+data Expr = Mul Expr Expr | Add Expr Expr | Num Int
+#+end_src
+
+#+begin_src scala
+sealed trait Expr
+final case class Mul(a: Expr, b: Expr) extends Expr
+final case class Add(a: Expr, b: Expr) extends Expr
+final case class Num(i: Int)           extends Expr
+#+end_src
+
+#+begin_src haskell -n
+eval ∷ Expr → Int
+eval (Mul a b) = eval a * eval b
+eval (Add a b) = eval a + eval b
+eval (Num n)   = n
+#+end_src
+
+:speakernotes:
+Recursion appears in two places here – we have a data type that refers to itself, and a function that calls itself.
+:END:
+
+* separation
+
+
+
+
+
+                                         *operation   ⇆   recursion*
+
+
+
+
+
+
+
+
+
+** the functor
+
+   :speakernotes:
+Let’s start by removing the recursion from the data type.
+   :END:
+
+#+begin_src haskell -n
+data Expr a = Mul a a | Add a a | Num Int
+#+end_src
+
+#+begin_src scala
+sealed trait Expr[A]
+final case class Mul[A](a: A, b: A) extends Expr[A]
+final case class Add[A](a: A, b: A) extends Expr[A]
+final case class Num[A](i: Int)     extends Expr[A]
+#+end_src
+
+   :speakernotes:
+this makes it a functor, sometimes called a “pattern functor”. You can do this transformation to any† recursive structure – XML, JSON, List, etc..
+
+[†]: Structural recursion is difficult. But also uncommon. It needs a variant of this approach that isn’t supported by any tools I’m aware of … yet.
+   :END:
+
+** attempts
+
+:speakernotes:
+Now we have to figure out how to represent that recursive structure again.
+:END:
+
+
+#+begin_src haskell -n
+data Expr a = …
+#+end_src
+
+#+begin_src haskell -n
+Expr Expr -- 🚫
+#+end_src
+
+   :speakernotes:
+except that Expr is still a functor, and so it needs an argument
+   :END:
+
+#+begin_src haskell -n
+Expr (Expr (Expr (Expr …))) -- 🚫
+
+Expr (Expr (Expr (Expr ()))) -- ❓
+#+end_src
+
+** fixed-point types
+
+#+begin_src haskell -n
+data Fix f = Fix (f (Fix f))
+project ∷ Fix f → f (Fix f)
+project (Fix f) = f
+
+Fix Expr
+#+end_src
+
+#+begin_src scala
+case class Fix[F[_]](project: F[Fix[F]])
+
+Fix[Expr]
+#+end_src
+
+** what about ~eval~?
+
+#+begin_src haskell -n
+eval ∷ Fix Expr → Int
+eval (Fix (Mul a b)) = eval a * eval b
+eval (Fix (Add a b)) = eval a + eval b
+eval (Fix (Num n))   = n
+#+end_src
+
+   :speakernotes:
+It just got uglier!
+
+Just as we separated Fix from our data structure, we can separate the recursion from our ~eval~ function.
+   :END:
+
+
+
+
+
+
+
+
+
+*** an algebra
+
+#+begin_src haskell -n
+eval ∷ Fix Expr → Int
+eval (Fix (Mul a b)) = eval a * eval b
+eval (Fix (Add a b)) = eval a + eval b
+eval (Fix (Num n))   = n
+#+end_src
+
+#+begin_src haskell -n
+eval ∷ Expr Int → Int
+eval (Mul a b) = a * b
+eval (Add a b) = a + b
+eval (Num n)   = n
+#+end_src
+
+*** So, what’s /an/ algebra?
+or, “I know what algebra is, and these ain’t it.”
+
+#+begin_src haskell -n
+type Algebra f a = f a → a
+
+eval ∷ Algebra Expr Int
+#+end_src
+
+:speakernotes:
+The algebras (and coalgebras, etc.) are more properly known as “F-algebras”. To connect these back to the algebra we’re all generally familiar with from school, let’s look at a simple ADT –
+
+We can write out a simple expression
+:END:
+
+
+
+
+
+
+
+
+
+**** an expression
+
+#+begin_src haskell -n
+val expr = Fix (Add (Fix (Mul (Fix (Add (Fix (Num 2)) (Fix …
+                              (Fix (Num 4))))
+                    (Fix (Add (Fix (Mul (Fix (Num 5)) (Fix …
+                              (Fix (Num 7)))))
+#+end_src
+
+#+begin_src scala
+val expr =
+  Fix(Add(Fix(Mul(Fix(Add(Fix(Num[Mu[Expr]](2)), Fix(Num[Mu…
+                  Fix(Num[Mu[Expr]](4)))),
+          Fix(Add(Fix(Mul(Fix(Num[Mu[Expr]](5)), Fix(Num[Mu…
+                  Fix(Num[Mu[Expr]](7))))))
+#+end_src
+
+**** cleaner (a.k.a, lying)
+
+#+begin_src haskell -n
+val expr = Add (Mul (Add (Num 2) (Num 3))
+                    (Num 4))
+               (Add (Mul (Num 5) (Num 6))
+                    (Num 7))
+#+end_src
+
+#+begin_src scala
+val expr =
+  Add(Mul(Add(Num(2), Num(3)),
+          Num(4)),
+      Add(Mul(Num(5), Num(6)),
+          Num(7)))
+#+end_src
+
+*((2 + 3) × 4) + ((5 × 6) + 7)*
+
+:speakernotes:
+which would have looked like *(2 + 3) × 4 + 5 × 6 + 7* back in high school. To make the precedence a bit more explicit, here are some extra parens: *((2 + 3) × 4) + ((5 × 6) + 7)*.
+:END:
+
+**** arithmetic
+
+:speakernotes:
+Now, how do we solve / evaluate this? If you’re anything like me, you take a few steps:
+:END:
+1. *((2 + 3) × 4) + ((5 × 6) + 7)*
+2. *(   5     × 4) + (  30   + 7)*
+3.         *20     +     37*
+4.                  *57*
+:speakernotes:
+So, there are two aspects to this. First, there are some simple rules:
+:END:
+#+begin_src scala
+val eval: Algebra[Expr, Int] = { // Expr[Int] ⇒ Int
+  // 1. + means to add two numbers together
+  case Add(x, y)  ⇒ x + y
+  // 2. * means to multiply to numbers together
+  case Mult(x, y) ⇒ x * y
+  // 3. a number simply represents itself
+  case Num(x)     ⇒ x
+}
+#+end_src
+
+Hey, look at that – this evaluation rule is an “algebra”. And it’s just a simplified version of the particular algebra we grew up with.
+
+*** and a fold
+
+    :speakernotes:
+And what is the recursion-adding analogue of ~Fix~ here?
+    :END:
+
+#+begin_src haskell -n
+cata ∷ Functor f ⇒ (f a → a) → Fix f → a
+cata φ (Fix f) = φ (fmap (cata φ) f)
+#+end_src
+
+#+begin_src haskell -n
+cata eval ∷ Fix Expr → Int
+#+end_src
+
+    :speakernotes:
+You may already be familiar with this concept:
+    :END:
+
+*** look familiar?
+
+#+begin_src haskell -n
+myList = [1, 2, 3, 4]
+foldr (+) 0 myList -- 10
+#+end_src
+
+#+begin_src scala
+val myList = List(1, 2, 3, 4)
+myList.foldRight(0)(_ + _) // 10
+#+end_src
+
+#+begin_src haskell -n
+data ListF a b = Nil | Cons a b
+type List a = Fix (ListF a)
+
+foldr ∷ (a → b → b) → b → List a → b
+foldr f z = cata (\case
+                    Cons a b → f a b
+                    Nil      → z)
+#+end_src
+
+* dueling duals
+
+  :speakernotes:
+Something that comes up a lot in the FP world is duals, you flip some arrows, and you come up with something that is the “opposite” of what you had before.
+  :END:
+
+** coalgebras
+
+#+begin_src haskell -n
+type Algebra   f a = f a →   a
+type Coalgebra f a =   a → f a
+
+factors ∷ Coalgebra Expr Int
+factors n = if n > 2 && n % 2 == 0
+              then Mul 2 (n / 2)
+              else Num n
+#+end_src
+
+*48*
+*2 * 24*
+*2 × (2 × 12)*
+*2 × (2 × (2 × 6))*
+*2 × (2 × (2 × (2 × 3)))*
+
+** unfolds
+
+#+begin_src haskell -n
+ana ∷ Functor f ⇒ (a → f a) → a → Fix f
+ana  ψ a = Fix (fmap (ana ψ) (ψ a))
+cata φ (Fix f) = φ (fmap (cata φ) f)
+#+end_src
+
+#+begin_src haskell -n
+ana factors ∷ Int → Fix Expr
+#+end_src
+
+:speakernotes:
+An example here is parsers. When you “run” the parser monad, you can actually get a Cofree structure, annotated with the source position.
+:END:
+
+
+** corecursion
+
+*** the problem with ~Fix~
+
+:speakernotes:
+The ~Fix~ type we’ve been using is nice and simple, but it’s a bit … unprincipled. For one, it’s still recursive. We have at least constrained recursion to this one library, but it’s still there. We’ll see later another place where it can cause a problem. But in the mean time, let’s replace it with something better.
+:END:
+
+#+begin_src haskell -n
+data Fix f = Fix (f (Fix f)) -- 🚫
+#+end_src
+
+#+begin_src haskell -n
+data Mu f = forall a. (f a → a) → a
+
+cata (Mu φ) = φ
+#+end_src
+
+:speakernotes:
+If you look at the definition of ~Mu~, its parameter is a function that takes an algebra, and returns the result of applying it. This eliminates the recursion from the definition, and from the corresponding definition of cata. So, we’ve now truly eliminated unbounded recursion here. This is the recursive fixed point.
+:END:
+
+*** ok, really corecursion
+
+:speakernotes:
+So, we’ve been talking about eliminating infinite loops, but there are cases where you /want/ infinite loops, right? Like event
+:END:
+
+#+begin_src haskell -n
+data Nu f where Nu ∷ (a → f a) → a → Nu f
+
+ana = Nu
+project (Nu f a) = fmap (Nu f) (f a)
+#+end_src
+
+* What is all this for again?!
+
+:speakernotes:
+Ostensibly, this was about eliminating recursion. And we did that. But we get a lot more out of this, and these are the reasons why I really think this is an approach that should be used directly.
+:END:
+
+** deferred decision-making
+
+:speakernotes:
+Even with a language like Idris, you have to decide between data and codata up front – and implement two sets of type classes.
+:END:
+
+#+begin_src idris
+data   List a   = Nil | Cons a (List a)
+codata Stream a = Nil | Cons a (Stream a)
+#+end_src
+
+#+begin_src haskell -n
+data ListF a b = Nil | Cons a b
+
+type List a   = Mu (ListF a)
+type Stream a = Nu (ListF a)
+#+end_src
+
+** general
+
+   :speakernotes:
+There are plenty of algebras that can be defined for large sets of data structures.
+   :END:
+
+#+begin_src scala
+def count(form: Mu[F]): GAlgebra[(Mu[F], ?), F, Int] =
+  e ⇒ e.foldRight(
+    if (e ∘ (_._1) == form.project) 1 else 0)(
+    _._2 + _)
+
+def size: F[Int] ⇒ Int = _.foldRight(1)(_ + _)
+
+def height: F[Int] ⇒ Int = _.foldRight(0)(_ max _)
+#+end_src
+
+
+** compositional
+
+*** coproducts
+
+
+
+
+
+*This slide has been postponed to 16:00. (Patrick Thomson)*
+
+*** annotations
+
+#+begin_src haskell -n
+Fix Expr
+#+end_src
+
+Mul
+├─ Num 6
+└─ Num 7
+
+#+begin_src haskell -n
+Cofree Expr Int
+#+end_src
+
+Mul (0)
+├─ Num 6 (1)
+└─ Num 7 (1)
+
+*** algebra transformations
+
+#+begin_src haskell -n
+attribute ∷ Algebra f a → Algebra f (Cofree f a)
+
+ignoreAttribute ∷ Algebra (EnvT f b) a → Algebra f a
+
+generalize ∷ Algebra f a → GAlgebra w f a
+
+type GAlgebra w f a = f (w a) → a
+type GCoalgbra m f a = f a → m a
+#+end_src
+
+
+** efficient
+
+    :speakernotes:
+With this layer-at-a-time approach, we can now also do additional work at each step.
+    :END:
+
+*** hylomorphisms
+     :speakernotes:
+- when you traverse a recursive data structure, you start at the root, move toward the leaves, then then back to the root.
+- an algebra gets applied to your structure on the way back to the root
+- but a coalgebra gets applied on the way to the leaves
+- so, if you have a coalgebra followed by an algebra (~cata φ ⋘ ana ψ~), you can apply both transformations in a single pass, as ~hylo φ ψ~
+     :END:
+#+begin_src php
+     ↘                     ↗
+       ↘                 ↗
+         ↘     hylo    ↗
+           ↘         ↗
+         ana ↘     ↗ cata
+               ↘_↗
+ #+end_src
+
+#+begin_src haskell -n
+cata bottomUp ⋘ ana topDown
+
+hylo bottomUp topDown
+#+end_src
+
+#+begin_src scala
+_.ana(topDown).cata(bottomUp)
+
+_.hylo(bottomUp, topDown)
+#+end_src
+
+*** zygomorphisms
+
+ :speakernotes:
+We talked earlier about how to use Cofree to annotate your tree with arbitrary information.
+:END:
+
+#+begin_src haskell -n
+buInferType ∷ Lambda Type → Type
+
+cata (attribute buInferType) ∷ Fix Lambda → Cofree Lambda Type
+
+useType1 ∷ Lambda (Type, Value) → Value
+zygo inferType useType1 ∷ Fix Lambda → Value
+
+tdInferType ∷ (Type, Fix Lambda) → Lambda (Type, Fix Lambda)
+useType2 ∷ (Type, Lambda Value) → Value
+coelgot useType2 tdInferType ∷ Fix Lambda → Value
+#+end_src
+
+*** Elgot algebras
+
+#+begin_src scala
+val buInferType: Lambda[Type] ⇒ Type
+
+lam.cata(buInferType.attribute): Cofree[Lambda, Type]
+
+val useType1: Lambda[(Type, Value)] ⇒ Value
+lam.zygo(inferType, useType1): Value
+
+val tdInferType: (Type, Fix[Lambda]) ⇒ Lambda[(Type, Fix[Lambda])]
+val useType2: (Type, Lambda[Value]) ⇒ Value
+lam.coelgot(useType2, tdInferType): Value
+#+end_src
+
+*** zip
+
+#+begin_src haskell -n
+pprint ∷ Expr String → String
+eval ∷ Expr Int → Int
+
+cata (zip pprint eval) ∷ Mu Expr → (String, Int)
+#+end_src
+
+#+begin_src scala
+val pprint: Expr[String] ⇒ String
+val eval: Expr[Int] ⇒ Int
+
+_.cata(pprint zip eval): Mu[Expr] ⇒ (String, Int)
+#+end_src
+
+* a real-world example
+#+begin_src haskell -n
+projectSortKeys ∷ Sql (Mu Sql) ⇒ Maybe (Sql (Mu Sql))
+scopeTables ∷ CoalgebraM (Either Error) Sql (Scope, Mu Sql)
+identifySynthetics ∷ Algebra Sql [Maybe Synthetic]
+inferProv ∷ ElgotAlgebraM ((,) Scope) (Either Error) Sql Prov
+
+-- projectSort ⋙ (identSynth &&& (scopeTables ⋙ inferProv))
+allPhases ∷ Mu Sql → Cofree Sql ([Maybe Synthetic], Prov)
+allPhases expr =
+  coelgotM (attributeAlgebra
+            (zip (return ⋘ (generalizeE identifySynthetics))
+                 inferProv))
+           scopeTables
+           (transCata (orOriginal projectSortKeys) ([], expr))
+#+end_src
+
+* the Fix programming language
+
+:speakernotes:
+Programming languages are my job and my hobby. So, when I work with a problem like this, I wonder about what would a programming language based on this look like?
+:END:
+- total
+- no recursion – all references form a DAG
+- discoverable minimum complete definitions of type classes (NP hard … but that’s a different talk)
+- strongly normalizing
+- function equality ⁉
+
+* questions?
+
+- *Haskell* – Ed Kmett’s library  (https://github.com/ekmett/recursion-schemes)
+- *Scala* – SlamData’s Matryoshka (https://github.com/slamdata/matryoshka)
+
+- [[https://github.com/sellout/recursion-scheme-talk]]
