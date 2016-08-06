@@ -9,6 +9,7 @@ Talks included in this repo:
 - [Fix Haskell (by eliminating recursion)](recursion-scheme-talk.org) (2016–01–26)
 - [Efficient Nanopass Compilers using Cats and Matryoshka](nanopass-compiler-talk.org) – [video](https://www.youtube.com/watch?v=TQIHRBXM75E) (2016–03–02)
 - [Recursion: where FP hits ⊥](recursion-bottom.org) – [video](https://www.youtube.com/watch?v=24UoRaoKLjM) (2016-05-27)
+- [Fix-ing Your Types With Matryoshka](fix-ing-your-types.org) – (2016-08-05)
 
 Additional resources:
 

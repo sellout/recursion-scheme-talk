@@ -1,0 +1,609 @@
+#+title: Fix-ing Your Types with Matryoshka
+#+author: Greg Pfeil
+#+email: greg@technomadic.org
+#+date: Friday, 2016 August 5
+#+options: d:(not LOGBOOK SPEAKERNOTES)
+#+drawers: SPEAKERNOTES
+#+epresent_frame_level: 3
+#+epresent_face_attributes: ((default :height 160 :family "Inconsolata"))
+#+epresent_mode_line: (" @sellout" "         Fix-ing Your Types with Matryoshka           " (:eval (int-to-string epresent-page-number)))
+
+
+  :SPEAKERNOTES:
+I really hope you are interested in what Rob was just talking about, because you’re about to get another 40 minutes of it. I think Rob did a great job motivating fixed point types, and his you-could-have-invented-these approach is really impressive.
+
+So now we’re going to dive a bit more into where this approach can take you and how you can avoid inventing it yourself (spoiler – it’s in the title!)
+
+Let this talk wash over you. It’s intended to inspire you to check out the library, look at the papers, etc. Don’t expect to understand it all as I go through it. Feel free to ask questions as they occur to you.
+
+We’re going to go through some things step-by-step, but we’ll also jump to the current boundaries of this approach (at least, as I understand them).
+  :END:
+
+
+- SlamData’s /Matryoshka/ (https://github.com/slamdata/matryoshka)
+
+- [[https://github.com/sellout/recursion-scheme-talk]]
+
+
+
+  ↓ Twitter                                       slide number ↓
+
+
+
+
+* Fixed point operators
+
+  :SPEAKERNOTES:
+Rob mentioned ~Fix~ already. But there are others. Fix is defined directly recursively:
+  :END:
+
+#+begin_src scala
+final case class Fix[F[_]](unFix: F[Fix[F]])
+
+final case class Cofree[F[_], A](head: A, tail: F[Cofree[F, A]])
+#+end_src
+
+
+
+
+
+
+
+
+
+
+
+** Is ~Cofree~ a fixed point operator?
+
+#+begin_src scala
+final case class Cofree[F[_], A](head: A, tail: F[Cofree[F, A]])
+#+end_src
+
+:speakernotes:
+So, you can see that ~EnvT~ is the /pattern functor/ of ~Cofree~. And there is a bit of magic such that if you can define a ~Bifunctor~ instance (or ~Bitraverse~) on your pattern functor, you get a ~Functor~ instance (or ~Traverse~) on the fixed point of that pattern functor.
+:END:
+
+** Is ~Cofree~ a fixed point operator?
+
+#+begin_src scala
+final case class Cofree[F[_], A](head: A, tail: F[Cofree[F, A]])
+final case class CofreeF[F[_], A, B](head: A, tail: F[B])
+
+final case class Prof(name: String, year: Int, students: List[Prof])
+final case class ProfF[A](name: String, year: Int, students: List[A])
+#+end_src
+
+:speakernotes:
+So, you can see that ~EnvT~ is the /pattern functor/ of ~Cofree~. And there is a bit of magic such that if you can define a ~Bifunctor~ instance (or ~Bitraverse~) on your pattern functor, you get a ~Functor~ instance (or ~Traverse~) on the fixed point of that pattern functor.
+:END:
+
+** Is ~Cofree~ a fixed point operator?
+
+#+begin_src scala
+final case class Cofree[F[_], A](head: A, tail: F[Cofree[F, A]])
+final case class CofreeF[F[_], A, B](head: A, tail: F[B])
+
+final case class EnvT[F[_], A, B](ask: A, lower: F[B])
+
+type Cofree[F[_], A] = Fix[EnvT[F, A, ?]]
+#+end_src
+
+:speakernotes:
+So, you can see that ~EnvT~ is the /pattern functor/ of ~Cofree~. And there is a bit of magic such that if you can define a ~Bifunctor~ instance (or ~Bitraverse~) on your pattern functor, you get a ~Functor~ instance (or ~Traverse~) on the fixed point of that pattern functor.
+:END:
+
+* unfolds
+
+#+begin_src scala
+// Monadic cofree corecursion
+def unfoldCM[M[_]: Monad, F[_]: Traverse, A]
+  (a: A)(f: A ⇒ M[F[A]]):
+    M[Cofree[F, A]] =
+  f(a).flatMap(_.traverse(unfoldCM(_)(f)).map(Cofree(a, _)))
+#+end_src
+
+#+begin_src scala
+type Algebra[F[_], A]   = F[A] ⇒ A
+type Coalgebra[F[_], A] = A ⇒ F[A]
+
+type Fold[F[_], A]   = Fix[F] ⇒ A
+type Unfold[F[_], A] = A ⇒ Fix[F]
+#+end_src
+
+
+** ~ana~
+
+#+begin_src scala
+// (A ⇒ M[F[A]]) ⇒ (A ⇒ M[Cofree[F, A]])
+def unfoldCM[M[_]: Monad, F[_]: Traverse, A]
+  (a: A)(f: A ⇒ M[F[A]]):
+    M[Cofree[F, A]]
+#+end_src
+
+#+begin_src scala
+// (A ⇒ F[A]) ⇒ (A ⇒ Fix[F])
+def ana[F[_]: Functor, A](a: A)(ψ: A ⇒ F[A]): Fix[F] =
+  Fix(ψ(a).map(ana(_)(ψ)))
+#+end_src
+
+** ~ana~
+
+#+begin_src scala
+// (A ⇒ F[A]) ⇒ (A ⇒ Fix[F])
+def ana[F[_]: Functor, A](a: A)(ψ: A ⇒ F[A]): Fix[F] =
+  Fix(ψ(a).map(ana(_)(ψ)))
+
+sealed abstract trait Expr[A]
+final case class Num[A](v: Int)     extends Expr[A]
+final case class Mul[A](a: A, b: A) extends Expr[A]
+
+def factor(i: Int): Expr[Int] =
+  if (i.isPrime) Num(i) else Mul(???, ???)
+#+end_src
+
+** ~ana~
+
+#+begin_src scala
+48.ana(factor)
+#+end_src
+
+*48*
+*2 * 24*
+*2 × (2 × 12)*
+*2 × (2 × (2 × 6))*
+*2 × (2 × (2 × (2 × 3)))*
+
+** ~ana~
+
+#+begin_src scala
+48.ana(factor)
+#+end_src
+
+#+begin_src scala
+         48
+         |
+    Mul(2, 24)
+       /     \
+ Num(2)       Mul(2, 12)
+                 /     \
+           Num(2)       Mul(2, 6)
+                           /    \
+                     Num(2)      Mul(2, 3)
+                                    /    \
+                              Num(2)      Num(3)
+#+end_src
+
+** ~ana~
+
+#+begin_src scala
+48.ana(factor)
+#+end_src
+
+#+begin_src scala
+Fix(Mul(Fix(Num(2)),
+        Fix(Mul(Fix(Num(2)),
+                Fix(Mul(Fix(Num(2)),
+                        Fix(Mul(Fix(Num(2)), Fix(Num(3))))))))))
+#+end_src
+
+** ~anaM~
+
+#+begin_src scala
+def ana[F[_]: Functor, A](a: A)(f: A ⇒ F[A]): Fix[F]
+  Fix(f(a).map(ana(_)(f)))
+
+// (A ⇒ M[F[A]]) ⇒ (A ⇒ M[Fix[F]])
+def anaM[M[_]: Monad, F[_]: Traverse, A](a: A)(f: A ⇒ M[F[A]]):
+    M[Fix[F]] =
+  f(a).flatMap(_.traverse(anaM(_)(f))).map(Fix(_))
+#+end_src
+
+:speakernotes:
+There’s a bit of handwaving about the equivalence between EnvT and Cofree … for now. We’ll get to that later.
+:END:
+
+** attribute
+
+#+begin_src scala
+// (A ⇒ M[F[A]]) ⇒ (A ⇒ M[Fix[F]])
+def anaM[M[_]: Monad, F[_]: Traverse, A](a: A)(f: A ⇒ M[F[A]]):
+    M[Fix[F]] =
+  f(a).flatMap(_.traverse(anaM(_)(f))).map(Fix(_))
+
+def attributeCoalgebra[F[_], B](ψ: B ⇒ F[B]):
+    B ⇒ EnvT[F, B, B] =
+  b ⇒ EnvT(b, ψ(b))
+
+// (A ⇒ M[F[A]]) ⇒ (A ⇒ M[Fix[EnvT[F, A, ?]]])
+def unfoldCM[M[_]: Monad, F[_]: Traverse, A]
+  (a: A)(f: A ⇒ M[F[A]]): M[Cofree[F, A]] =
+  a.anaM(attributeCoalgebraM(f))
+#+end_src
+
+
+* folds
+
+  :speakernotes:
+I usually introduce these in the other direction, because people tend to be more familiar with the concept of a fold than an unfold
+  :END:
+
+#+begin_src scala
+def ana[F[_]: Functor, A](a: A)(ψ: A ⇒ F[A]): Fix[F] =
+  Fix(ψ(a).map(ana(_)(ψ)))
+
+def cata[F[_]: Functor, A](t: Fix[F])(φ: F[A] ⇒ A): A =
+  φ(t.unFix.map(cata(_)(φ)))
+#+end_src
+
+
+
+
+
+
+
+
+** algebra
+
+#+begin_src scala
+val eval: Expr[Int] ⇒ Int = {
+  case Num(v)    ⇒ v
+  case Mul(a, b) ⇒ a * b
+}
+
+val expr =
+  Mul(Num(2), Mul(Num(2), Mul(Num(2), Mul(Num(2), Num(3)))))
+
+expr.cata(eval) // 48
+#+end_src
+
+* composition
+
+  :speakernotes:
+So, what is this ~ghylo~?
+
+It is one of the benefits we get from working with algebras rather than recursive functions.
+  :END:
+
+#+begin_src scala
+a.ana(ψ).cata(φ)
+#+end_src
+
+#+begin_src php
+A ↘                     ↗ Fix[F] ↘                     ↗ B
+    ↘                 ↗            ↘                 ↗
+      ↘             ↗                ↘             ↗
+        ↘         ↗                    ↘         ↗
+      ana ↘     ↗ Fix()            unFix ↘     ↗ cata
+            ↘_↗                            ↘_↗
+ #+end_src
+
+:speakernotes:
+That applies some coalgebra to a value, unfolding it; then an algebra, folding it again. But let’s look at how these functions work.
+
+An unfold takes some value of type A, and breaks it into pieces, putting those pieces inside some functor, F. Then it applies the same function to each of those pieces, and so on until there are no pieces left. Now it has all these Fs, and it needs to put them into the recursive structure.
+
+A fold, on the other hand, does nothing on its way to the leaves of the structure – but once it gets there, it starts applying the algebra, combining the pieces into some B, repeatedly, until we have a single B at the end.
+
+Well, if ana does all of its work on the way /to/ the leaves, and cata does its work on the way back, we can save some time and allocation by “fusing” those operations. And that’s what ~hylo~ does.
+:END:
+
+
+
+* 💥fusion💥
+
+
+#+begin_src scala
+a.hylo(φ, ψ)
+#+end_src
+
+#+begin_src php
+A ↘                     ↗ B
+    ↘                 ↗
+      ↘     hylo    ↗
+        ↘         ↗
+      ana ↘     ↗ cata
+            ↘_↗
+ #+end_src
+
+
+
+:speakernotes:
+So, now we do only a single pass over the data, and we actually never build up the intermediate structure at all.
+
+So, I mentioned that this particular composition is a “fusion”. That is a specific kind of composition that is very desirable because it avoids building up some intermediate struture. The most common form of this is “map fusion”, where ~foo.map(f).map(g)~ can be improved by doing ~foo.map(g ⋘ f)~. Again, only doing one pass over the data rather than two.
+
+There are other places that fusion pops up, notably in the metamorphism, which is basically the reverse of a hylomorphism – a fold followed by an unfold.
+
+But there are a ton of other ways to compose algebras.
+:END:
+
+** zygomorphisms
+
+ :speakernotes:
+We talked earlier about how to use Cofree to annotate your tree with arbitrary information.
+:END:
+
+#+begin_src haskell -n
+val buInferType: Lambda[Type] ⇒ Type
+
+_.cata(attributeAlgebra(buInferType)):
+    Fix[Lambda] ⇒ Cofree[Lambda, Type]
+
+val useType1: Lambda[(Type, Value)] ⇒ Value
+_.zygo(buInferType, useType1): Fix[Lambda] ⇒ Value
+#+end_src
+
+** zip
+
+#+begin_src scala
+val pprint: Expr[String] ⇒ String
+val eval: Expr[Int] ⇒ Int
+
+_.cata(pprint zip eval): Mu[Expr] ⇒ (String, Int)
+#+end_src
+
+* generalization
+
+#+begin_src scala
+def gcata[W[_]: Comonad, F[_]: Functor, A](
+  t: T[F])(
+  k: DistributiveLaw[F, W], φ: F[W[A]] ⇒ A):
+    A
+
+def gana[M[_]: Monad, F[_]: Functor, A](
+  a: A)(
+  k: DistributiveLaw[M, F], ψ: A ⇒ F[M[A]]):
+    T[F]
+#+end_src
+
+** ~DistributiveLaw~
+
+#+begin_src scala
+// F[G[A]] ⇒ G[F[A]]
+type DistributiveLaw[F[_], G[_]] = (F ∘ G)#λ ~> (G ∘ F)#λ
+
+def distTraverse[F[_]: Traverse, G[_]: Applicative] =
+  new DistributiveLaw[F, G] {
+    def apply[A](fga: F[G[A]]) = fga.sequence
+  }
+
+cata(t)(φ) ≟ gcata(t)(distCata, φ)
+futu(a)(ψ) ≟ gana(a)(distFutu, ψ)
+zygo(t)(φ0, φ) ≟ gcata(t)(distZygo(φ0), φ)
+#+end_src
+
+:SPEAKERNOTES:
+A ~DistributiveLaw[F[_], G[_]]~ is anything that satisfies ~F[G[A]] ⇒ G[F[A]]~.
+
+This likely looks familiar – when there’s ~Traverse[F]~ and ~Applicative[G]~, you have ~sequence~. A less common (but also general) case is when there’s ~Functor[F]~ and ~Distributive[G]~, you have the dual – ~cosequence~. There are also many other, less general cases, and that’s what we actually tend to run into with recursion schemes.
+
+So, in order to have a {co}monadic {un}fold, you need one of these for the specific pair of types you’re dealing with. It works trivially with ~Id~, but also ~Free~, ~Cofree~, product, disjunction, etc.
+:END:
+
+
+** symmetry
+
+   :speakernotes:
+And, beyond that, you have ~ghylo~
+   :END:
+
+#+begin_src scala
+def ghylo[W[_]: Comonad, M[_]: Monad, F[_]: Functor, A, B](
+  a: A)(
+  w: DistributiveLaw[F, W], m: DistributiveLaw[M, F],
+  φ: F[W[B]] ⇒ B, ψ: A ⇒ F[M[A]]):
+    B
+
+gcata(t)(k, φ) ≟ ghylo(t)(k, distAna, φ, _.project)
+gana(a)(k, ψ)  ≟ ghylo(a)(distCata, k, _.embed, ψ)
+#+end_src
+
+:speakernotes:
+So, see, only one function you have to remember ;)
+:END:
+
+* generality
+
+#+begin_src scala
+def size[F[_]: Foldable]: F[Int] ⇒ Int = _.foldRight(1)(_ + _)
+
+def height[F[_]: Foldable]: F[Int] ⇒ Int =
+  _.foldRight(-1)(_ max _) + 1
+
+def toTree[F[_]: Functor: Foldable]: Algebra[F, Tree[F[Unit]]] =
+  x ⇒ Tree.Node(x.void, x.toStream)
+#+end_src
+
+* a real-world example
+#+begin_src scala
+projectSortKeys: Sql[Fix[Sql]] ⇒ Option[Sql[Fix[Sql]]]
+scopeTables: (Scope, Fix[Sql]) ⇒ Error \/ Sql[(Scope, Fix[Sql])]
+identSynth: Sql[List[Option[Synth]]] ⇒ List[Option[Synth]]
+inferProv: (Scope, Sql[Prov]) ⇒ Error \/ Prov
+
+def allPhases(expr: Fix[Sql]):
+    Cofree[Sql, (List[Option[Synth]], Prov)] =
+  (Nil, expr.transCata(orOriginal projectSortKeys)).coelgotM(
+    attributeAlgebra(
+      zip(
+        generalizeE(identifySynthetics)(_).point[Error \/ ?],
+        inferProv))
+    scopeTables)
+#+end_src
+
+* future directions (in-progress)
+
+- +Scala.js support+ (thanks, Edmund Noble)
+
+
+
+
+
+
+
+
+
+
+
+
+
+** Library independence
+
+   :SPEAKERNOTES:
+There is currently a pile of dependencies on Scalaz. I would love to go through with Shims and make it less dependent, with subprojects for the appropriate libraries.
+   :END:
+
+- currently coupled to /Scalaz/
+- want to support /Cats/, or even just the stdlib
+- /Matryoshka/ has its own ~Free~, ~Cofree~, ~List~, etc.
+
+- Daniel Spiewak’s /Shims/
+
+** directly-recursive types
+
+   :SPEAKERNOTES:
+We’ve discussed a couple cases where you can define a fixed-point type that is equivalent to a directly recursive type: ListF, EnvT, CoenvT, etc. But that means you need to convert your `Free` to `Mu[EnvT]` before doing any work with it, right? Well, sort of …
+   :END:
+
+#+begin_src scala
+// someCofree.cata(myAlgebra): A
+someCofree.hylo(myAlgebra, EnvT.cofreeIso.reverseGet)
+// someA.ana(myCoalgebra): Cofree[F, A]
+someA.hylo(EnvT.cofreeIso.get, myCoalgebra)
+#+end_src
+
+:SPEAKERNOTES:
+All of these take advantage of the efficient composition of algebras to do all the work in a single pass. This is possible right now, and SlamData’s Quasar uses this a lot. But there are some shortcomings.
+
+1. there’s noise – having to explicitly use those isomorphisms isn’t pretty. In Quasar we’ve made some helper functions for this, but I’d rather not introduce those into Matryoshka itself.
+2. it doesn’t cover /every/ case. For example, ~myTransformation~ has to be a /natural/ transformation to not need two passes.
+
+But, we can do better (I hope). If we look at the isomorphism, it’s a lot like the isomorphism between ~project~ and ~embed~, with one important distinction – the pattern functor is not the same as the functor represented by the ~F~ in ~Free[F, A]~.
+:END:
+
+#+begin_src scala
+Fix[F] ⇒ F[_]
+
+List[A] ⇒ ListF[A, _]
+Cofree[F, A] ⇒ EnvT[F, A, _]
+Free[F, A] ⇒ CoenvT[F, A, _]
+#+end_src
+
+:SPEAKERNOTES:
+So we need some way to explicitly specify the pattern functor for a specific fixed-point type.
+:END:
+
+
+
+
+
+*** existential (associated) types
+
+#+begin_src scala
+@typeclass trait Recursive[T[_[_]]] {
+  def project[F[_]: Functor](tf: T[F]): F[T[F]]
+}
+
+@typeclass trait Recursive[T] {
+  type Base[A]
+  def project(tf: T)(implicit F: Functor[Base]): Base
+}
+implicit def fixRecursive[F[_]] = new Recursive[Fix[F]] {
+  type Base[A] = F[A]
+}
+implicit def freeRecursive[F[_], A] = new Recursive[Free[F, A]] {
+  type Base[B] = CoenvT[F, A, B]
+}
+#+end_src
+
+:SPEAKERNOTES:
+Now the generic ~project~ / ~embed~ isomorphism replaces the ones explicitly defined for ~EnvT~, ~CoenvT~, etc.
+
+However, there are some implementation issues that I have yet to sort out completely (not least is the ugliness of implicits that use the ~Aux~ style).
+:END:
+
+** mutually-recursive types
+
+   :SPEAKERNOTES:
+Right now, ~Fix[F]~ allows any of the components of ~F~ to be used at any point in the hierarchy. This is great when you have a nice clean “single-sorted” AST. But as soon as you have a distinction between where the components can be used (say, expressions vs statements) this breaks down. The multi-sorted solution uses “higher-order” functors that look like
+   :END:
+
+#+begin_src scala
+sealed trait Lang[A]
+final case class Lit[A](i: Int)      extends Lang[A]
+final case class Pair[A](l: A, r: A) extends Lang[A]
+final case class Add[A](l: A, r: A)  extends Lang[A]
+final case class Mult[A](l: A, r: A) extends Lang[A]
+final case class Fst[A](p: A)        extends Lang[A]
+final case class Snd[A](p: A)        extends Lang[A]
+#+end_src
+
+
+
+
+
+
+
+
+*** higher-order functors
+
+#+begin_src scala
+final case class FixH[F[_[_], _], I](hunFix: F[FixH[F, ?], I])
+
+type FoldH[F[_[_], _], A[_]]    = FixH[F, ?] ~> A
+type AlgebraH[F[_[_], _], A[_]] = F[A, ?] ~> A
+#+end_src
+
+:SPEAKERNOTES:
+Where the ~A~ (carrier) has also been lifted to a functor
+
+So, now all our algebras are natural transformations that look like
+
+So, what does this extra parameter get us? It’s where we define the /sort/ of values that are allowed in certain places. Yes, it’s a lot like types. Here’s an example that does use sorts as a simple type system, making sure all operations type check. Note: this doesn’t scale to a very rich type system.
+:END:
+
+*** constraining the structure
+
+#+begin_src scala
+sealed trait Lang[A[_], I]
+
+case class Lit[A[_]](i: Int) extends Lang[A, Int]
+
+case class Pair[A[_], I, J](l: A[I], r: A[J])
+    extends Lang[A, (I, J)]
+
+case class Add[A[_]](l: A[Int], r: A[Int]) extends Lang[A, Int]
+
+case class Mult[A[_]](l: A[Int], r: A[Int]) extends Lang[A, Int]
+
+case class Fst[A[_], I, J](p: A[(I, J)]) extends Lang[A, I]
+
+case class Snd[A[_], I, J](p: A[(I, J)]) extends Lang[A, J]
+#+end_src
+
+:SPEAKERNOTES:
+This works, but isn’t yet available in master. Targeting mid-September.
+:END:
+
+** adjoint folds
+
+
+
+
+
+
+
+                          *¯\_(ツ)_/¯*
+
+   :SPEAKERNOTES:
+This one is simultaneously a big deal, but also the one SlamData has the least use for day-to-day. You’ve seen the `ghylo` which generalizes basically all the folds and unfolds into one very flexible one.
+
+In fact, we can go much further. Rather than abstracting over {co}monads, we can abstract over adjunctions. It subsumes all the {co}monad transformations and also provides other ones, like ~mutu~ in the same framework. Currently ~mutu~ needs to be hand-written.
+   :END:
+* Questions?
+
+
+
+*Gitter* – slamdata/matryoshka
+
+*Greg Pfeil* – greg@slamdata.com
