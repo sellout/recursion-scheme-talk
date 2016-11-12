@@ -1,0 +1,582 @@
+#+title:  *⬋* This programmer *⬋* modeled his code after wooden nesting dolls. What happens next will amaze you.
+#+author: Greg Pfeil
+#+date: Saturday, 11 November 2016
+#+email: greg@technomadic.org
+#+options: d:(not LOGBOOK SPEAKERNOTES)
+#+drawers: SPEAKERNOTES
+#+epresent_frame_level: 4
+#+epresent_face_attributes: ((default :family "Fira Code") (epresent-title-face :height 1000 :foreground "#073642" :underline nil) (epresent-heading-face :height 750 :foreground "#073642" :underline nil) (epresent-subheading-face :height 750 :foreground "#073642" :underline nil))
+#+epresent_mode_line: (" @sellout" "             " "Matryoshka" "                    " (:eval (int-to-string epresent-page-number)))
+
+
+
+
+
+
+  ↓ Twitter                            slide number ↓
+
+* Matryoshka
+
+            [[./nesting_dolls_of_horror_small.jpg]]
+
+* Matryoshka
+:speakernotes:
+So, what are these wooden nesting dolls, and how do they relate to programming?
+:end:
+
+- https://github.com/slamdata/matryoshka
+- [[https://github.com/sellout/recursion-scheme-talk]]
+- separation of concerns
+- meant to invoke “finite nesting” (induction)
+- also handles infinite recursion (coinduction)
+
+
+
+
+
+
+
+
+** recursion schemes
+
+              [[./venn.png]]
+
+** Influences
+
+:speakernotes:
+Before I start, I want to mention some people who have done real work in this area. Most of what I have to say is just learned through imitation and asking these people tons of questions. And, in the heat of a talk, I always forget to give credit where it’s due.
+:end:
+
+- Ed Kmett –
+  https://github.com/ekmett/recursion-schemes
+- Patrick Bahr – https://github.com/pa-ba/compdata
+- Patrick Thomson – http://blog.sumtypeofway.com
+- the papers
+  - /Functional Programming with Bananas, Lenses/,
+    /Envelopes and Barbed Wire/
+  - /Unifying Structured Recursion Schemes/
+- Typelevel (http://typelevel.org)
+
+** a simple AST
+
+
+
+#+begin_src scala
+sealed abstract class Expr
+final case class Num(v: Int)           extends Expr
+final case class Mul(a: Expr, b: Expr) extends Expr
+
+val eval: Expr => Int = {
+  case Num(v)    => v
+  case Mul(a, b) => eval(a) * eval(b)
+}
+#+end_src
+
+** Add a type parameter! (Stephen Compall)
+
+https://www.youtube.com/watch?v=BHjIl81HgfE
+
+#+begin_src scala
+sealed abstract class Expr[A]
+final case class Num[A](v: Int)     extends Expr[A]
+final case class Mul[A](a: A, b: A) extends Expr[A]
+
+def eval: Expr[Int] => Int = {
+  case Num(v)    => v
+  case Mul(a, b) => a * b
+}
+#+end_src
+
+:speakernotes:
+Wouldn’t it be nice if we could actually define eval that way? It just assumes the branches are already handled – all we have to do is multiply the numbers that are held in the multiply node. We’ll come back to that …
+:end:
+
+* re-introducing recursion
+
+:speakernotes:
+So, we have an ~Expr[A]~, and to make it recursive like it was before, we need to turn that ~A~ into a recursive structure again.
+:end:
+
+#+begin_src scala
+sealed abstract class Expr[A]
+
+type ExprR0 = Expr[Expr] // 🚫
+
+type ExprR1 = Expr[Expr[Expr[Expr[Expr[Unit]]]]] // ❓
+#+end_src
+
+
+
+
+
+
+
+
+** ~Fix~
+
+:speakernotes:
+Who has heard of the Y combinator? (Not the Paul Graham one, but the one he named his company after.) We’re basically going to do that, but at the type level.
+:end:
+
+#+begin_src scala
+sealed abstract class Expr[A]
+
+final case class Fix[F[_]](unFix: F[Fix[F]])
+
+type ExprR = Fix[Expr]
+#+end_src
+
+** beyond ~Fix~
+
+:speakernotes:
+I’m not going to get into the details too much, but in addition to ~Fix~, there are a couple other fixed-point operators: ~Mu~ and ~Nu~. They externally look exactly the same, but have different implementations. Basically, ~Mu~ is for finite structures and ~Nu~ is for potentially-infinite structures (like streams).
+:end:
+
+- ~Fix[F]~: simple to implement, not (yet) stack-stafe
+- ~Mu[F]~: inductive (finite) structures
+- ~Nu[F]~: coinductive (maybe-infinite) structures
+
+** ~Recursive~
+
+:speakernotes:
+Since we have three of these at hand, it makes sense to see how we can abstract over them.
+:end:
+
+#+begin_src scala
+@typeclass trait Recursive[T] {
+  type Base[A]
+  def project(t: T)(implicit BF: Functor[Base])
+      : Base[T]
+}
+
+implicit def fixRec[F[_]]: Recursive.Aux[Fix[F], F] =
+  new Recursive[Fix[F]] {
+    type Base[A] = F[A]
+    def project(t: Fix[F])(implicit BF: Functor[F])
+        : F[Fix[F]] =
+      t.unFix
+}
+#+end_src
+
+:speakernotes:
+Looking at fixed-point types, the structure of recursion seems obvious – there is some fixed-point operator, and a functor that is made recursive with it.
+
+And then we notice that this extends to other recursive structures as well, like ~Free~ and ~Cofree~.
+:end:
+
+** replicating common structures
+
+:speakernotes:
+But we can re-create those problematic structures using our fixed-point operators.
+:end:
+
+#+begin_src scala
+sealed abstract class ListF[A, B]
+final case class NilF[A, B]()
+    extends ListF[A, B]
+final case class ConsF[A, B](head: A, tail: B)
+    extends ListF[A, B]
+
+type List[A]   = Mu[ListF[A, ?]]
+type Colist[A] = Nu[ListF[A, ?]] // a.k.a. “Stream”
+#+end_src
+
+:speakernotes:
+our two isomorphic structures now behave differently. Not to mention that for the latter behavior, you first have the overhead of converting the structure to a different one.
+:end:
+
+** without replicating
+
+#+begin_src scala
+implicit def listRec[A]: Recursive[List[A]] =
+  new Recursive[List[A]] {
+    type Base[B] = ListF[A, B]
+    def project(t: T)(implicit BF: Functor[Base])
+        : ListF[A, List[A]] =
+      t match {
+        case Nil    => NilF()
+        case h :: t => ConsF(h, t)
+      }
+  }
+#+end_src
+
+** some common ones
+
+| ~T~            | ~Base[_]~        |
+|--------------+----------------|
+| ~Fix[F]~       | ~F~              |
+| ~Mu[F]~        | ~F~              |
+| ~Nu[F]~        | ~F~              |
+| ~List[A]~      | ~ListF[A, ?]~    |
+| ~Colist[A]~    | ~ListF[A, ?]~    |
+| ~Stream[A]~    | ~(A, ?)~         |
+| ~Cofree[F, A]~ | ~EnvT[A, F, ?]~  |
+| ~Free[F, A]~   | ~CoEnv[A, F, ?]~ |
+| ~Nat~          | ~Option~         |
+| ~A~            | ~Const[A, ?]~    |
+
+- arbitrary AST isn’t ~Foldable~, but it /is/ ~Recursive~ – so now you have generalized folds over any AST
+
+** … and its dual (~Corecursive~)
+
+:speakernotes:
+very briefly …
+:end:
+
+#+begin_src scala
+@typeclass trait Corecursive[T] {
+  type Base[A]
+  def embed(ft: Base[T])(implicit BF: Functor[Base])
+      : T
+}
+
+implicit def fixCo[F[_]]: Corecursive[Fix[F]] =
+  new Corecursive[Fix[F]] {
+    type Base[A] = F[A]
+    def embed(ft: F[Fix[F]])(implicit BF: Functor[F])
+        : Fix[F] =
+      Fix(ft)
+}
+#+end_src
+
+* so, what can we do with this?
+
+:speakernotes:
+What the type class shows us, is that there is a simple relationship between various types and a functor. Clearly, at this point, anything this type class offers us is widely applicable. But what /does/ it offer us? The simplest thing is ~cata~.
+:end:
+
+#+begin_src scala
+def cata(t: T)(φ: Base[A] => A): A =
+  φ(t.project ∘ (cata(_)(φ)))
+
+def eval: Expr[Int] => Int = {
+  case Num(v)    => v
+  case Mul(a, b) => a * b
+}
+
+cata(someExpr)(eval)
+
+def ana(a: A)(ψ: A => Base[A]): T = // dual
+  (ψ(a) ∘ (ana(_)(ψ))).embed
+#+end_src
+
+
+
+
+
+
+
+
+
+** catamorphism
+
+#+begin_src scala
+val eval: Expr[Int] ⇒ Int = {
+  case Num(v)    ⇒ v
+  case Mul(a, b) ⇒ a * b
+}
+
+val expr =
+  Mul(
+    Num(2),
+    Mul(Num(2), Mul(Num(2), Mul(Num(2), Num(3)))))
+
+expr.cata(eval) // 48
+#+end_src
+
+** anamorphism
+
+#+begin_src scala
+48.ana(factor)
+#+end_src
+
+#+begin_src scala
+         48
+         |
+    Mul(2, 24)
+       /     \
+ Num(2)       Mul(2, 12)
+                 /     \
+           Num(2)       Mul(2, 6)
+                           /    \
+                     Num(2)      Mul(2, 3)
+                                    /    \
+                              Num(2)      Num(3)
+#+end_src
+
+** generalized fold
+
+#+begin_src scala
+def foldRight[A, B]
+  (list: List[A], z: B)
+  (f: (A, B) => B)
+    : B =
+  list.cata {
+    case NilF()           => z
+    case ConsF(elem, acc) => f(elem, acc)
+  }
+#+end_src
+
+:speakernotes:
+So, this is a generalization of folds. Now, you may think “isn’t Foldable a generalization of folds?” It kind of is … but it’s actually just for folding lists … to make an arbitrary structure ~Foldable~, you have to throw away all of the non-list-like information. This actually abstracts from having Nil/Cons cases to having cases for any set of nodes in your data type.
+:end:
+
+** even more generalized
+
+:speakernotes:
+You might be looking at this and saying something like “sure, it works for simple cases, but I sometimes want to have a recursive function that depends on the partial result of another recursive function” or, “I need to look at the original structure as I go – it’s not enough to simply have the results thus far”
+
+Well, have I got news for you!
+
+These recursion schemes generalize in a number of ways. The “simplest” way is that they can all be Kleislied – Rob will touch on a bit of that tomorrow. But, very quickly,
+:end:
+
+#+begin_src scala
+       (F[A] => M[A]) => Fix[F] => M[A]
+       (A => M[F[A]]) => A      => M[Fix[F]]
+
+#+end_src
+
+:speakernotes:
+But, there are a bunch of other generalizations. I’ll just give one example:
+:end:
+
+#+begin_src scala
+    F[(Fix[F], A)] => A       A => F[Fix[F] \/ A]
+#+end_src
+
+:speakernotes:
+more generally …
+:end:
+
+#+begin_src scala
+           F[W[A]] => A       A => F[M[A]]
+#+end_src
+
+:speakernotes:
+So, you can turn that tuple into (almost) any arbitrary comonad – e.g., perhaps you want an non-empty-list of possible results from the previous nodes, and choose the best way to combine them for the next step.
+
+You can also turn that disjunction into an arbitrary monad – each one has its own behaviors. A few of the most useful comonads and monads have been given particular names.
+
+and there’s another family, like
+:end:
+
+#+begin_src scala
+           W[F[A]] => A       A => M[F[A]]
+#+end_src
+
+:speakernotes:
+Note that the second case _looks_ Kleisli, but isn’t. The algebra is the same, but when you use it in an unfold, Kleisli gives you ~A => M[Fix[F]]~, whereas an elgot unfold gives you ~A => Fix[F]~.
+
+Scott Maher (1:40) and Rob Norris (2:10) and both have talks scheduled tomorrow that go into some other neat things you can do with these, so I won’t try to cover all of it.
+:end:
+
+** cheat sheet
+
+[[./cheat_sheet.pdf]]
+
+* benefits
+
+“Meijer et. al go so far as to condemn functional
+ programming without recursion schemes as morally
+ equivalent to imperative programming with goto.”
+         —Patrick Thomson
+          in /An Introduction to Recursion Schemes/
+
+- annotate arbitrary structures (Rob Norris)
+
+** zipping
+
+#+begin_src scala
+def eval:   Expr[Int]    => Int
+def pprint: Expr[String] => String
+
+pprint zip eval: Expr[(String, Int)] => (String, Int)
+#+end_src
+
+** composition
+
+#+begin_src scala
+a.ana(ψ).cata(φ)
+#+end_src
+
+#+begin_src php
+A ↘                 ↗ Fix[F] ↘                 ↗ B
+    ↘             ↗            ↘             ↗
+      ↘         ↗                ↘         ↗
+     ψ  ↘     ↗ Fix()        unFix ↘     ↗  φ
+          ↘_↗                        ↘_↗
+ #+end_src
+
+** 💥 fusion 💥
+
+#+begin_src scala
+a.hylo(φ, ψ)
+#+end_src
+
+#+begin_src php
+A ↘                 ↗ B
+    ↘             ↗
+      ↘   hylo  ↗
+     ψ  ↘     ↗  φ
+          ↘_↗
+ #+end_src
+
+* mutual recursion (multi-sorted ASTs)
+
+:speakernotes:
+before, we saw how we could add a type parameter to our AST to be able to separate the “concerns” of recursion from our model. But this only works with mono-sorted structures. I.e., where you have te same structure at every level. However, it’s very common to have a more complicated model – where you have, say, expressions and statements, and you need to indicate which parts of the structure can occur where.
+
+We do this by … adding another type parameter!
+
+Previously, we had a proper type that we could extract a functor from. Now we’re going to have a functor thet we can extract a … higher-order functor from.
+
+In our case, we had a functor, where we could have the fixed-point of the same functor as the ~A~ parameter. But now we need to carry some extra information around – the “sort” of data that’s allowed at any point. Here’s an example from comp-data:
+
+(maybe merge this into one datatype, depending on whether we cover Coproduct before this)
+:end:
+
+#+begin_src scala
+sealed abstract class Sig[A[_], I]
+#+end_src
+#+begin_src scala
+case class Pair[A[_], I, J](fst: A[I], snd: A[J])
+    extends Sig[A, (I, J)]
+case class Const[A[_]](v: Int) extends Sig[A, Int]
+case class Add[A[_]](a: A[Int], b: A[Int])
+    extends Sig[A, Int]
+case class Fst[A[_], I, J](p: A[(I, J)])
+    extends Sig[A, I]
+case class Snd[A[_], I, J](p: A[(I, J)])
+    extends Sig[A, J]
+#+end_src
+
+:speakernotes:
+You can see that ~A~ is now a functor that is parameterized by the type of the value that will be evaluated to. But this technique is more general than that. You could easily usee ~final case object `Integer~ instead of the Scala ~Int type. In this case, that might make it harder to interpret the program completely, but the index or “sort” doesn’t necessaryly map to the type of the expression. At SlamData, we use sorts to differentiate between literal values, mapping operations, and dimuntsional transforms.
+:end:
+
+
+
+
+
+
+
+** and its type class
+
+:speakernotes:
+Rather than thinking of it as a higher-order fixed-point + a higher-order functor, think of it as a functor from which we can extract a higher-order functor:
+:end:
+
+#+begin_src scala
+@typeclass trait HRecursive[T[_]] {
+  type Base[G[_], A]
+
+  def hproject(implicit BF: HFunctor[Base])
+      : T ~> Base[T, ?]
+}
+#+end_src
+
+“It’s just a +monoid+ functor in the category of endofunctors.”
+
+:speakernotes:
+This is until Miles gets us kind-polymorphism in Typelevel Scala, and these become a single type class.
+:end:
+
+* migrating existing code
+
+:speakernotes:
+If you’re interested in trying this approach, but are unlikely to get support at work to rewrite all of your data structures as functors (or higher-order functors), there is an incremental approach. One caveat: it does require a bit of duplication.
+
+First, you need to have both the directly-recusive and functorized structures. Similiar to the `ListF` case. Now, you can implement ~Recursive~ and ~Corecursive~ instances on your directly recursive type, with the functorized version as ~Base~. Ok, you’re done – start writing algebras using the functor, and all of the folds exist on your directly-recursive type.
+:end:
+
+#+begin_src scala
+sealed abstract class ExprF[A]
+#+end_src
+#+begin_src scala
+final case class NumF[A](v: Int)     extends ExprF[A]
+final case class MulF[A](a: A, b: A) extends ExprF[A]
+
+implicit def exprRec: Recursive.Aux[Expr, ExprF] =
+  new Recursive[Expr] {
+    type Base[A] = ExprF[A]
+    def project(t: Expr)(implicit BF: Functor[ExprF])
+        : ExprF[Expr] =
+      t match {
+        case Num(v)    => NumF(v)
+        case Mul(a, b) => MulF(a, b)
+      }
+  }
+#+end_src
+
+* future work
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+** Adjoint Folds
+
+:speakernotes:
+Adjunctions (which exist in Scalaz, and @stew is working on a Typelevel library with them) are basically a pair of functors that obey certain properties. One is that if you compose them one way, you get a monad, and if you compose them the other way, you get a comonad.
+:end:
+
+#+begin_src scala
+// F ⊣ G
+abstract class Adjunction[F[_], G[_]] {
+  ...
+  def monad(implicit G: Functor[G]): Monad[(G ∘ F)#λ]
+  def comonad(implicit F: Functor[F])
+      : Comonad[(F ∘ G)#λ]
+  ...
+}
+#+end_src
+
+:speakernotes:
+And that pair of monad and comonad are duals. In fact, every monad (and its dual) can be broken down into a pair of functors that form an adjunction. And so this makes explicit the duals in the generalized algebras of recursion schemes – from a single Adjunction, we can extract the dual constructions.
+
+Also, this gives us folds and unfolds that aren’t possible with the direct comonadic that Matryoshka currently uses. E.g., the “mutumorphism”, which is a generalization of the zygomorphism that allows both algebras to refer to the results of the other – giving us mutual recursion in recursion schemes. We do /have/ ~mutu~, but it’s implemented outside of the nice generalized model we have.
+:end:
+
+** Abstract Binding Trees
+
+:speakernotes:
+ABTs are like ASTs, but if you’ve ever created an AST that has variable bindings, you may have noticed that they’re a pain to deal with. There are a few different approaches with tradeoffs, and one of those is ABTs. Like with recursion schemes, ABTs attempt to separate variable binding from your code.
+
+SlamData has an ABT library, but it requires writing things in a style that is distinct from both direct recursion and recursion schemes. I /think/ we could approach it in a way that takes advantage of recursion schemes.
+:end:
+
+#+begin_src scala
+sealed abstract class ABT[F[_], A]
+#+end_src
+#+begin_src scala
+final case class Var[F[_], A](v: String)
+    extends ABT[F, A]
+final case class Abs[F[_], A](v: String, term: A)
+    extends ABT[F, A]
+final case class Term[F[_], A](tm: F[A])
+    extends ABT[F, A]
+#+end_src
+
+* Questions?
+
+:speakernotes:
+- I’m happy to talk to anyone about any of this stuff. There is a lot here that I glossed over or didn’t even mention.
+
+Again, not my ideas – look to Phil Wadler, Ed Kmett, Erik Meijer, etc. But it’s been fun to explore them in Scala.
+:end:
+
+
+*GitHub* (and *Gitter*) – slamdata/matryoshka
+
+*Greg Pfeil* – greg@slamdata.com

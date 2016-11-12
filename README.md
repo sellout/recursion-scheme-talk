@@ -6,10 +6,11 @@ This repository will track the changes as this talk develops. Each actual presen
 
 Talks included in this repo:
 
-- [Fix Haskell (by eliminating recursion)](recursion-scheme-talk.org) (2016–01–26)
-- [Efficient Nanopass Compilers using Cats and Matryoshka](nanopass-compiler-talk.org) – [video](https://www.youtube.com/watch?v=TQIHRBXM75E) (2016–03–02)
-- [Recursion: where FP hits ⊥](recursion-bottom.org) – [video](https://www.youtube.com/watch?v=24UoRaoKLjM) (2016-05-27)
-- [Fix-ing Your Types With Matryoshka](fix-ing-your-types.org) – (2016-08-05)
+- [Fix Haskell (by eliminating recursion)](recursion-scheme-talk.org) (Boulder Haskell Meetup – 2016–01–26)
+- [Efficient Nanopass Compilers using Cats and Matryoshka](nanopass-compiler-talk.org) – [video](https://www.youtube.com/watch?v=TQIHRBXM75E) (Typelevel Summit Philly – 2016–03–02)
+- [Recursion: where FP hits ⊥](recursion-bottom.org) – [video](https://www.youtube.com/watch?v=24UoRaoKLjM) (Moonconf – 2016-05-27)
+- [Fix-ing Your Types With Matryoshka](fix-ing-your-types.org) – (Scala Up North – 2016-08-05)
+- [This programmer modeled his code after wooden nesting dolls. What happens next will amaze you.](matryoshka.org) – (Scalæ By the Bay – 2016-11-12)
 
 Additional resources:
 
