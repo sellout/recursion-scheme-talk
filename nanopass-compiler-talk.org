@@ -111,16 +111,13 @@ This isn’t necessarily /one/ pass, but rather a small number of complicated pa
 def compile: Lambda => State[CompState, Assem] = {
   case Var(name) => ???.point[State[CompState, ?]]
   case Lam(args, body) => compile(body).map(???)
-  case App(f, expr) =>
+  case App(f, exprs) =>
     (compile(f) |@| exprs.traverse(compile))(???)
   case Let(bindings, body) =>
-    bindings.unzip((names, exprs) =>
-      (compile(body) |@| exprs.traverse(compile))((b, e) =>
-        compile(App(Lam(names, b), e))))
+    val (names, exprs) = bindings.unzip
+    compile(App(Lam(names, body), exprs))
   case If(test, consequent, alt) =>
-    (compile(test) |@| compile(consequent) |@| compile(alt))(
-      (t, c, a) =>
-        compile(App(t, List(Lam(Nil, c), Lam(Nil, a)))))
+    compile(App(test, List(Lam(Nil, consequent), Lam(Nil, alt))))
 }
 #+end_src
 
